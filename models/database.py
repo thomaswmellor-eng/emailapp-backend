@@ -12,15 +12,27 @@ from config import settings
 # Créer le répertoire data s'il n'existe pas
 os.makedirs('data', exist_ok=True)
 
+# Convertir la chaîne de connexion ODBC en format SQLAlchemy
+connection_string = settings.DB_CONNECTION_STRING
+# Extraire les paramètres de la chaîne ODBC
+params = dict(param.split('=') for param in connection_string.split(';') if param)
+server = params.get('Server', '').replace('tcp:', '')
+database = params.get('Database', '')
+username = params.get('Uid', '')
+password = params.get('Pwd', '')
+
+# Créer la chaîne de connexion SQLAlchemy
+sqlalchemy_url = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver=ODBC+Driver+18+for+SQL+Server"
+
 # Engine setup
 if settings.ENVIRONMENT == "production":
     # Use Azure SQL in production
-    engine = create_engine(settings.DB_CONNECTION_STRING, 
+    engine = create_engine(sqlalchemy_url, 
                          echo=True,
                          connect_args={"TrustServerCertificate": "yes"})
 else:
     # Use SQLite in development
-    engine = create_engine(settings.DB_CONNECTION_STRING, connect_args={"check_same_thread": False})
+    engine = create_engine(sqlalchemy_url, connect_args={"check_same_thread": False})
 
 # Créer une session de base de données
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
