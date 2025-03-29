@@ -104,6 +104,30 @@ async def root():
         "environment": settings.ENVIRONMENT
     }
 
+@app.get("/debug/cors")
+async def debug_cors():
+    """
+    Point de terminaison pour déboguer la configuration CORS
+    """
+    cors_origins = settings.CORS_ORIGINS
+    
+    # Vérifier si chaque origine est correctement formatée
+    validated_origins = []
+    for origin in cors_origins:
+        origin = origin.strip()
+        if origin == "*":
+            validated_origins.append({"origin": "*", "status": "valid"})
+        elif origin.startswith(("http://", "https://")):
+            validated_origins.append({"origin": origin, "status": "valid"})
+        else:
+            validated_origins.append({"origin": origin, "status": "invalid", "reason": "missing scheme (http:// or https://)"})
+    
+    return {
+        "configured_origins": cors_origins,
+        "environment_variable": os.getenv("CORS_ORIGINS", "NOT_SET"),
+        "validated_origins": validated_origins
+    }
+
 # Initialiser la base de données au démarrage
 @app.on_event("startup")
 async def startup_event():
