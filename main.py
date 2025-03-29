@@ -31,13 +31,29 @@ app = FastAPI(
 )
 
 # Configurer CORS pour permettre les requêtes du frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins = settings.CORS_ORIGINS
+logger.info(f"Configuration CORS - Origines autorisées: {cors_origins}")
+
+# Si on a juste ['*'], accepter toutes les origines
+if cors_origins == ["*"]:
+    logger.info("Mode CORS permissif activé - Toutes les origines sont autorisées")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # Mode restrictif avec origines spécifiques
+    logger.info(f"Mode CORS restrictif activé - Origines autorisées: {cors_origins}")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Initialize the database
 create_tables()
