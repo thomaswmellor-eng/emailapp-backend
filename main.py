@@ -51,19 +51,11 @@ app.include_router(auth_router, prefix="/api/auth", tags=["authentication"])
 # Gestionnaire d'exceptions global
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Global exception: {exc}", exc_info=True)
+    logger.error(f"Erreur non gérée: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Une erreur inattendue est survenue. Veuillez réessayer plus tard."}
+        content={"detail": f"Une erreur s'est produite: {str(exc)}"}
     )
-
-@app.get("/")
-def read_root():
-    return {
-        "message": "Bienvenue sur l'API de génération d'emails",
-        "docs": "/docs",
-        "environment": settings.ENVIRONMENT
-    }
 
 @app.get("/api/health")
 async def health_check():
@@ -99,6 +91,17 @@ async def check_config():
             "your_position": os.getenv("YOUR_POSITION", "Non défini"),
             "your_contact": os.getenv("YOUR_CONTACT", "Non défini"),
         }
+    }
+
+@app.get("/")
+async def root():
+    """
+    Racine de l'API
+    """
+    return {
+        "message": "Bienvenue sur l'API de génération d'emails",
+        "docs": "/docs",
+        "environment": settings.ENVIRONMENT
     }
 
 # Initialiser la base de données au démarrage

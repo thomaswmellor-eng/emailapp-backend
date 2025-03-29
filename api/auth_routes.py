@@ -1,202 +1,134 @@
 import os
 import random
 import string
-import logging
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from sqlalchemy.orm import Session
-from typing import Any, Dict
-
-from models.database import (
-    get_db, User, VerificationCode, 
-    VerificationCodeCreate, VerificationCodeResponse, VerificationCodeVerify,
-    UserCreate, UserResponse
-)
-from utils.email_sender import EmailSender
-
-# Configuration du logging
-logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+from sqlalchemy.exc import IntegrityError
+from typing import Optional
+from datetime import datetime, timedelta
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from models.database import User, AuthRequest, AuthVerify, UserResponse, get_db
 
 router = APIRouter()
 
-def generate_verification_code(length=6):
-    """Génère un code de vérification aléatoire"""
-    return ''.join(random.choices(string.digits, k=length))
+def generate_auth_code():
+    """Génère un code d'authentification à 6 chiffres"""
+    return ''.join(random.choices(string.digits, k=6))
 
-@router.post("/request-code", response_model=VerificationCodeResponse)
-async def request_verification_code(
-    verification_data: VerificationCodeCreate,
-    db: Session = Depends(get_db)
-) -> Any:
+def send_auth_email(recipient_email: str, auth_code: str):
+    """Envoie un email avec le code d'authentification"""
+    sender_email = "no-reply@wesiagency.com"
+    message = MIMEMultipart("alternative")
+    message["Subject"] = "Votre code d'authentification"
+    message["From"] = sender_email
+    message["To"] = recipient_email
+
+    # Texte de l'email
+    text = f"""
+    Bonjour,
+    
+    Votre code d'authentification pour l'application Email Generator est : {auth_code}
+    
+    Ce code est valable pendant 15 minutes.
+    
+    Cordialement,
+    L'équipe WesiAgency
     """
-    Demande un code de vérification pour l'adresse email fournie.
-    Le code est envoyé par email et est valide pendant 15 minutes.
+
+    # HTML de l'email
+    html = f"""
+    <html>
+      <body>
+        <p>Bonjour,</p>
+        <p>Votre code d'authentification pour l'application <b>Email Generator</b> est :</p>
+        <h2 style="color: #4a86e8; font-size: 24px; padding: 10px; background-color: #f2f2f2; border-radius: 5px; text-align: center;">{auth_code}</h2>
+        <p>Ce code est valable pendant 15 minutes.</p>
+        <p>Cordialement,<br>L'équipe WesiAgency</p>
+      </body>
+    </html>
     """
-    email = verification_data.email
+
+    part1 = MIMEText(text, "plain")
+    part2 = MIMEText(html, "html")
+    message.attach(part1)
+    message.attach(part2)
+
+    try:
+        # Utilisation du relais SMTP Localhost sans authentification
+        with smtplib.SMTP("localhost", 25) as server:
+            server.sendmail(sender_email, recipient_email, message.as_string())
+        return True
+    except Exception as e:
+        print(f"Erreur d'envoi d'email: {e}")
+        # Fallback : simuler l'envoi pour le développement
+        print(f"[DEV] Code d'authentification pour {recipient_email}: {auth_code}")
+        return False
+
+@router.post("/request", status_code=status.HTTP_202_ACCEPTED)
+def request_auth_code(request: AuthRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Demande un code d'authentification par email"""
     
-    # Générer un code à 6 chiffres
-    code = generate_verification_code()
+    # Générer un code d'authentification
+    auth_code = generate_auth_code()
+    auth_expires = datetime.utcnow() + timedelta(minutes=15)
     
-    # Date d'expiration (15 minutes)
-    expires_at = datetime.utcnow() + timedelta(minutes=15)
+    # Chercher l'utilisateur par email
+    user = db.query(User).filter(User.email == request.email).first()
     
-    # Vérifier si un code existe déjà pour cet email
-    existing_code = db.query(VerificationCode).filter(VerificationCode.email == email).first()
-    
-    if existing_code:
-        # Mettre à jour le code existant
-        existing_code.code = code
-        existing_code.created_at = datetime.utcnow()
-        existing_code.expires_at = expires_at
-        existing_code.is_used = False
-        db.commit()
-        db.refresh(existing_code)
-        verification_code = existing_code
+    if user:
+        # Mettre à jour le code d'authentification
+        user.auth_code = auth_code
+        user.auth_code_expires_at = auth_expires
     else:
-        # Créer un nouveau code
-        verification_code = VerificationCode(
-            email=email,
-            code=code,
-            expires_at=expires_at
-        )
-        db.add(verification_code)
-        db.commit()
-        db.refresh(verification_code)
-    
-    # Envoyer le code par email
-    email_sent = EmailSender.send_verification_code(email, code)
-    
-    if not email_sent:
-        # Si l'email n'a pas pu être envoyé, supprimer le code
-        db.delete(verification_code)
-        db.commit()
-        raise HTTPException(
-            status_code=500,
-            detail="Impossible d'envoyer le code de vérification. Veuillez réessayer plus tard."
-        )
-    
-    return verification_code
-
-@router.post("/verify-code", response_model=UserResponse)
-async def verify_code(
-    verification_data: VerificationCodeVerify,
-    db: Session = Depends(get_db)
-) -> Any:
-    """
-    Vérifie le code envoyé par l'utilisateur.
-    Si le code est valide, l'utilisateur est authentifié ou créé si c'est la première connexion.
-    """
-    email = verification_data.email
-    code = verification_data.code
-    
-    # Rechercher le code de vérification
-    verification_code = db.query(VerificationCode).filter(
-        VerificationCode.email == email,
-        VerificationCode.is_used == False
-    ).first()
-    
-    if not verification_code:
-        raise HTTPException(
-            status_code=404,
-            detail="Aucun code de vérification trouvé pour cet email."
-        )
-    
-    # Vérifier si le code est expiré
-    if datetime.utcnow() > verification_code.expires_at:
-        raise HTTPException(
-            status_code=400,
-            detail="Le code de vérification a expiré. Veuillez demander un nouveau code."
-        )
-    
-    # Vérifier si le code est correct
-    if verification_code.code != code:
-        raise HTTPException(
-            status_code=400,
-            detail="Code de vérification incorrect."
-        )
-    
-    # Marquer le code comme utilisé
-    verification_code.is_used = True
-    db.commit()
-    
-    # Rechercher l'utilisateur existant ou en créer un nouveau
-    user = db.query(User).filter(User.email == email).first()
-    
-    if not user:
         # Créer un nouvel utilisateur
         user = User(
-            email=email,
-            name=email.split('@')[0],  # Nom par défaut basé sur l'email
-            company="",
-            position="",
-            contact_info=email
+            email=request.email,
+            auth_code=auth_code,
+            auth_code_expires_at=auth_expires
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
-    else:
-        # Mettre à jour la date de dernière connexion
-        user.last_login = datetime.utcnow()
-        db.commit()
-        db.refresh(user)
     
-    # Associer le code de vérification à l'utilisateur
-    verification_code.user_id = user.id
-    db.commit()
-    
-    return user
+    try:
+        db.commit()
+        # Envoyer l'email en arrière-plan
+        background_tasks.add_task(send_auth_email, request.email, auth_code)
+        return {"message": "Code d'authentification envoyé par email"}
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erreur lors de l'enregistrement du code d'authentification"
+        )
 
-@router.get("/me", response_model=UserResponse)
-async def get_current_user(
-    email: str,
-    db: Session = Depends(get_db)
-) -> Any:
-    """
-    Récupère les informations de l'utilisateur actuellement connecté.
-    """
-    user = db.query(User).filter(User.email == email).first()
+@router.post("/verify", response_model=UserResponse)
+def verify_auth_code(request: AuthVerify, db: Session = Depends(get_db)):
+    """Vérifie le code d'authentification"""
+    
+    user = db.query(User).filter(User.email == request.email).first()
     
     if not user:
         raise HTTPException(
-            status_code=404,
-            detail="Utilisateur non trouvé."
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Utilisateur non trouvé"
         )
     
-    return user
-
-@router.put("/me", response_model=UserResponse)
-async def update_user_profile(
-    email: str,
-    user_data: Dict[str, Any] = Body(...),
-    db: Session = Depends(get_db)
-) -> Any:
-    """
-    Met à jour le profil de l'utilisateur actuellement connecté.
-    """
-    user = db.query(User).filter(User.email == email).first()
-    
-    if not user:
+    if user.auth_code != request.code:
         raise HTTPException(
-            status_code=404,
-            detail="Utilisateur non trouvé."
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Code d'authentification invalide"
         )
     
-    # Mettre à jour les champs fournis
-    if "name" in user_data:
-        user.name = user_data["name"]
-    if "company" in user_data:
-        user.company = user_data["company"]
-    if "position" in user_data:
-        user.position = user_data["position"]
-    if "contact_info" in user_data:
-        user.contact_info = user_data["contact_info"]
+    if user.auth_code_expires_at < datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Code d'authentification expiré"
+        )
     
+    # Réinitialiser le code d'authentification après vérification
+    user.auth_code = None
+    user.auth_code_expires_at = None
     db.commit()
-    db.refresh(user)
     
     return user 

@@ -12,9 +12,10 @@ import logging
 from datetime import datetime
 from models.database import (
     get_db, EmailStatus, Template, Contact, SharedEmails, Friend, 
-    EmailTemplate, CacheInfo, EmailContent, EmailGenerationRequest, BatchEmailResponse
+    EmailTemplate, CacheInfo, EmailContent, EmailGenerationRequest, BatchEmailResponse, User
 )
 from utils.prospect_email_generator import ProspectEmailGenerator, generate_email_content_with_ai
+from utils.auth import get_current_user
 import io
 
 # Setup logging
@@ -99,21 +100,20 @@ def map_apollo_columns(df):
     
     return df
 
-@router.post("/generate", response_model=Dict[str, Any])
+@router.post("/generate", response_model=BatchEmailResponse)
 async def generate_emails(
     file: UploadFile = File(...),
+    use_ai: bool = Form(True),
     stage: str = Form("outreach"),
+    template_id: Optional[int] = Form(None),
+    company_name: Optional[str] = Form(None),
     your_name: Optional[str] = Form(None),
     your_position: Optional[str] = Form(None),
-    company_name: Optional[str] = Form(None),
     your_contact: Optional[str] = Form(None),
-    use_ai: bool = Form(False),
-    template_id: Optional[int] = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Génère des emails pour une liste de contacts à partir d'un fichier CSV
-    """
+    """Générer des emails personnalisés à partir d'un fichier CSV de contacts"""
     logger.info(f"Generate emails called: stage={stage}, use_ai={use_ai}, template_id={template_id}")
     logger.info(f"File received: {file.filename}")
     
@@ -327,7 +327,10 @@ async def generate_emails(
                     stage=stage,
                     status='draft',
                     subject=email_content['subject'],
-                    body=email_content['body']
+                    body=email_content['body'],
+                    user_id=current_user.id,
+                    contact_id=contact.id,
+                    template_id=template_id
                 )
                 db.add(new_email)
                 db.commit()
@@ -366,16 +369,19 @@ async def generate_emails(
 @router.get("/by-stage/{stage}")
 async def get_emails_by_stage(
     stage: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Get all emails for a specific stage (outreach, followup, lastchance)
-    """
-    valid_stages = ['outreach', 'followup', 'lastchance']
-    if stage not in valid_stages:
-        raise HTTPException(status_code=400, detail="Invalid stage. Must be one of: outreach, followup, lastchance")
+    """Récupérer les emails par étape"""
+    # Vérifier que l'étape est valide
+    if stage not in ["outreach", "followup", "lastchance"]:
+        raise HTTPException(status_code=400, detail=f"Stage '{stage}' invalide. Les valeurs valides sont 'outreach', 'followup', 'lastchance'")
     
-    emails = db.query(EmailStatus).filter(EmailStatus.stage == stage).all()
+    # Récupérer les emails de l'utilisateur courant pour cette étape
+    emails = db.query(EmailStatus).join(Contact).filter(
+        EmailStatus.user_id == current_user.id,
+        EmailStatus.stage == stage
+    ).all()
     
     result = []
     for email in emails:
@@ -624,10 +630,8 @@ async def save_template(
     )
 
 @router.get("/cache", response_model=CacheInfo)
-async def get_cache_info():
-    """
-    Récupère des informations sur le cache d'emails
-    """
+async def get_cache_info(current_user: User = Depends(get_current_user)):
+    """Obtenir des informations sur le cache d'emails"""
     cache_size = len(email_generator.cache)
     last_updated = max([entry.get('timestamp', '') for entry in email_generator.cache.values()]) if cache_size > 0 else None
     
@@ -637,11 +641,9 @@ async def get_cache_info():
         cache_file=email_generator.cache_file
     )
 
-@router.delete("/cache", response_model=Dict[str, Any])
-async def clear_cache():
-    """
-    Vide le cache d'emails
-    """
+@router.delete("/cache")
+async def clear_cache(current_user: User = Depends(get_current_user)):
+    """Vider le cache d'emails"""
     email_generator.cache = {}
     
     # Sauvegarder le cache vide

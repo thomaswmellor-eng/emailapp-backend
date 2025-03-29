@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
-from models.database import get_db, Template
+from models.database import get_db, Template, TemplateCreate, TemplateResponse, User
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
+from utils.auth import get_current_user
 
 router = APIRouter()
 
@@ -33,63 +34,84 @@ class TemplateResponse(TemplateBase):
 
 # Routes pour les templates
 @router.get("/", response_model=List[TemplateResponse])
-async def get_all_templates(db: Session = Depends(get_db)):
-    """Récupérer tous les templates disponibles"""
-    templates = db.query(Template).all()
+def get_templates(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Récupérer tous les templates de l'utilisateur"""
+    templates = db.query(Template).filter(Template.user_id == current_user.id).all()
     return templates
 
 @router.get("/{template_id}", response_model=TemplateResponse)
-async def get_template(template_id: int, db: Session = Depends(get_db)):
-    """Récupérer un template spécifique par son ID"""
-    template = db.query(Template).filter(Template.id == template_id).first()
+def get_template(template_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Récupérer un template par son ID"""
+    template = db.query(Template).filter(
+        Template.id == template_id,
+        Template.user_id == current_user.id
+    ).first()
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail="Template non trouvé")
     return template
 
 @router.post("/", response_model=TemplateResponse)
-async def create_template(template: TemplateCreate, db: Session = Depends(get_db)):
+def create_template(template: TemplateCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Créer un nouveau template"""
-    # Gérer le cas où ce template serait défini comme défaut
+    # Si le template est marqué comme par défaut, désactiver tous les autres templates par défaut
     if template.is_default:
-        # Désactiver les autres templates par défaut
-        db.query(Template).filter(Template.is_default == True).update({"is_default": False})
-        
-    new_template = Template(**template.dict())
-    db.add(new_template)
+        db.query(Template).filter(
+            Template.user_id == current_user.id, 
+            Template.is_default == True
+        ).update({"is_default": False})
+    
+    # Créer le nouveau template
+    db_template = Template(
+        user_id=current_user.id,
+        name=template.name,
+        subject=template.subject,
+        body=template.body,
+        is_default=template.is_default
+    )
+    db.add(db_template)
     db.commit()
-    db.refresh(new_template)
-    return new_template
+    db.refresh(db_template)
+    return db_template
 
 @router.put("/{template_id}", response_model=TemplateResponse)
-async def update_template(template_id: int, template_data: TemplateUpdate, db: Session = Depends(get_db)):
-    """Mettre à jour un template existant"""
-    template = db.query(Template).filter(Template.id == template_id).first()
+def update_template(template_id: int, template_data: TemplateCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Mettre à jour un template"""
+    template = db.query(Template).filter(
+        Template.id == template_id,
+        Template.user_id == current_user.id
+    ).first()
+    
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail="Template non trouvé")
     
-    # Mettre à jour les champs modifiés
-    update_data = template_data.dict(exclude_unset=True)
+    # Si le nouveau template est marqué comme par défaut, désactiver tous les autres templates par défaut
+    if template_data.is_default and not template.is_default:
+        db.query(Template).filter(
+            Template.user_id == current_user.id, 
+            Template.is_default == True
+        ).update({"is_default": False})
     
-    # Gérer le cas où ce template serait défini comme défaut
-    if "is_default" in update_data and update_data["is_default"]:
-        # Désactiver les autres templates par défaut
-        db.query(Template).filter(Template.is_default == True).update({"is_default": False})
+    # Mettre à jour le template
+    template.name = template_data.name
+    template.subject = template_data.subject
+    template.body = template_data.body
+    template.is_default = template_data.is_default
     
-    for key, value in update_data.items():
-        setattr(template, key, value)
-    
-    template.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(template)
     return template
 
 @router.delete("/{template_id}")
-async def delete_template(template_id: int, db: Session = Depends(get_db)):
+def delete_template(template_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Supprimer un template"""
-    template = db.query(Template).filter(Template.id == template_id).first()
+    template = db.query(Template).filter(
+        Template.id == template_id,
+        Template.user_id == current_user.id
+    ).first()
+    
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail="Template non trouvé")
     
     db.delete(template)
     db.commit()
-    return {"message": "Template deleted successfully"} 
+    return {"message": "Template supprimé avec succès"} 

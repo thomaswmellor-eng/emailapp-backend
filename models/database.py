@@ -1,7 +1,6 @@
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Table, MetaData, Float, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Table
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, Session
-from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
 from typing import List, Optional, Dict, Any
@@ -10,8 +9,10 @@ from pydantic import BaseModel, Field, validator
 import json
 from config import settings
 import re
+import urllib.parse
 import random
 import string
+from datetime import timedelta
 
 # Créer le répertoire data s'il n'existe pas
 os.makedirs('data', exist_ok=True)
@@ -63,6 +64,8 @@ class User(Base):
     company = Column(String(255))
     contact = Column(String(255))
     is_active = Column(Boolean, default=True)
+    auth_code = Column(String(6), nullable=True)
+    auth_code_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -77,7 +80,6 @@ class User(Base):
         secondaryjoin=id==friends_association.c.friend_id,
     )
     shared_emails = relationship("SharedEmails", back_populates="user")
-    verification_codes = relationship("VerificationCode", back_populates="user")
 
 class Contact(Base):
     __tablename__ = "contacts"
@@ -160,20 +162,6 @@ class Friend(Base):
     status = Column(String(50))  # pending, accepted, rejected
     share_cache = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-class VerificationCode(Base):
-    __tablename__ = "verification_codes"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    code = Column(String(10), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=False)
-    is_used = Column(Boolean, default=False)
-    
-    # Utilisateur associé (relation optionnelle si le code est utilisé pour créer un nouvel utilisateur)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    user = relationship("User", back_populates="verification_codes")
 
 # Créer les tables
 def create_tables():
@@ -386,27 +374,40 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     create_default_template()
 
+# Modèles Pydantic pour l'authentification
+class AuthRequest(BaseModel):
+    email: str
+    
+    @validator('email')
+    def email_must_be_valid(cls, v):
+        try:
+            validate_email(v)
+            return v
+        except EmailNotValidError:
+            raise ValueError('Email non valide')
+
+class AuthVerify(BaseModel):
+    email: str
+    code: str
+    
+    @validator('email')
+    def email_must_be_valid(cls, v):
+        try:
+            validate_email(v)
+            return v
+        except EmailNotValidError:
+            raise ValueError('Email non valide')
+    
+    @validator('code')
+    def code_must_be_valid(cls, v):
+        if not re.match(r'^\d{6}$', v):
+            raise ValueError('Code doit être 6 chiffres')
+        return v
+
 # Exporter les modèles
 __all__ = [
     "get_db", "init_db", "User", "Template", "EmailStatus", "Contact", 
     "Friend", "SharedEmails", "UserBase", "EmailTemplate", "CacheInfo",
     "EmailContent", "FriendRequest", "FriendResponse",
-    "EmailGenerationRequest", "EmailResponse", "BatchEmailResponse",
-    "VerificationCode", "VerificationCodeCreate", "VerificationCodeResponse", "VerificationCodeVerify"
-]
-
-# Ajouter après le modèle SharedEmailResponse
-class VerificationCodeCreate(BaseModel):
-    email: str
-    
-class VerificationCodeResponse(BaseModel):
-    email: str
-    created_at: datetime
-    expires_at: datetime
-    
-    class Config:
-        orm_mode = True
-        
-class VerificationCodeVerify(BaseModel):
-    email: str
-    code: str 
+    "EmailGenerationRequest", "EmailResponse", "BatchEmailResponse"
+] 
