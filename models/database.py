@@ -79,7 +79,7 @@ class User(Base):
         primaryjoin=id==friends_association.c.user_id,
         secondaryjoin=id==friends_association.c.friend_id,
     )
-    shared_emails = relationship("SharedEmails", back_populates="user")
+    shared_emails = relationship("SharedEmails", back_populates="user", foreign_keys="[SharedEmails.user_id]")
 
 class Contact(Base):
     __tablename__ = "contacts"
