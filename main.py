@@ -6,10 +6,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
 import sys
-from api.email_routes import router as email_router
-from api.friends_routes import router as friends_router
-from api.template_routes import router as template_router
-from api.auth_routes import router as auth_router
+from api import auth_routes, user_routes, contact_routes, template_routes, email_routes, friend_routes, admin_routes
 from models.database import create_tables
 from config import settings
 
@@ -59,10 +56,13 @@ else:
 create_tables()
 
 # Inclure les routes
-app.include_router(email_router, prefix="/api/emails", tags=["emails"])
-app.include_router(friends_router, prefix="/api/friends", tags=["friends"])
-app.include_router(template_router, prefix="/api/templates", tags=["templates"])
-app.include_router(auth_router, prefix="/api/auth", tags=["authentication"])
+app.include_router(auth_routes.router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(user_routes.router, prefix="/api/users", tags=["Users"])
+app.include_router(contact_routes.router, prefix="/api/contacts", tags=["Contacts"])
+app.include_router(template_routes.router, prefix="/api/templates", tags=["Templates"])
+app.include_router(email_routes.router, prefix="/api/emails", tags=["Emails"])
+app.include_router(friend_routes.router, prefix="/api/friends", tags=["Friends"])
+app.include_router(admin_routes.router, prefix="/api/admin", tags=["Administration"])
 
 # Gestionnaire d'exceptions global
 @app.exception_handler(Exception)
