@@ -9,6 +9,7 @@ import sys
 from api.email_routes import router as email_router
 from api.friends_routes import router as friends_router
 from api.template_routes import router as template_router
+from api.auth_routes import router as auth_router
 from models.database import create_tables
 from config import settings
 
@@ -45,15 +46,24 @@ create_tables()
 app.include_router(email_router, prefix="/api/emails", tags=["emails"])
 app.include_router(friends_router, prefix="/api/friends", tags=["friends"])
 app.include_router(template_router, prefix="/api/templates", tags=["templates"])
+app.include_router(auth_router, prefix="/api/auth", tags=["authentication"])
 
 # Gestionnaire d'exceptions global
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Erreur non gérée: {str(exc)}", exc_info=True)
+    logger.error(f"Global exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Une erreur s'est produite: {str(exc)}"}
+        content={"detail": "Une erreur inattendue est survenue. Veuillez réessayer plus tard."}
     )
+
+@app.get("/")
+def read_root():
+    return {
+        "message": "Bienvenue sur l'API de génération d'emails",
+        "docs": "/docs",
+        "environment": settings.ENVIRONMENT
+    }
 
 @app.get("/api/health")
 async def health_check():
@@ -89,17 +99,6 @@ async def check_config():
             "your_position": os.getenv("YOUR_POSITION", "Non défini"),
             "your_contact": os.getenv("YOUR_CONTACT", "Non défini"),
         }
-    }
-
-@app.get("/")
-async def root():
-    """
-    Racine de l'API
-    """
-    return {
-        "message": "Bienvenue sur l'API de génération d'emails",
-        "docs": "/docs",
-        "environment": settings.ENVIRONMENT
     }
 
 # Initialiser la base de données au démarrage
