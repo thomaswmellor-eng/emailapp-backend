@@ -6,27 +6,26 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from datetime import datetime, timedelta
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import logging
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 from models.database import User, AuthRequest, AuthVerify, UserResponse, get_db
+from config import settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 def generate_auth_code():
     """Génère un code d'authentification à 6 chiffres"""
     return ''.join(random.choices(string.digits, k=6))
 
 def send_auth_email(recipient_email: str, auth_code: str):
-    """Envoie un email avec le code d'authentification"""
-    sender_email = "no-reply@wesiagency.com"
-    message = MIMEMultipart("alternative")
-    message["Subject"] = "Votre code d'authentification"
-    message["From"] = sender_email
-    message["To"] = recipient_email
-
+    """Envoie un email avec le code d'authentification via SendGrid"""
+    sender_email = os.getenv("SENDGRID_FROM_EMAIL", "no-reply@wesiagency.com")
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    
     # Texte de l'email
-    text = f"""
+    text_content = f"""
     Bonjour,
     
     Votre code d'authentification pour l'application Email Generator est : {auth_code}
@@ -38,7 +37,7 @@ def send_auth_email(recipient_email: str, auth_code: str):
     """
 
     # HTML de l'email
-    html = f"""
+    html_content = f"""
     <html>
       <body>
         <p>Bonjour,</p>
@@ -50,20 +49,28 @@ def send_auth_email(recipient_email: str, auth_code: str):
     </html>
     """
 
-    part1 = MIMEText(text, "plain")
-    part2 = MIMEText(html, "html")
-    message.attach(part1)
-    message.attach(part2)
-
+    message = Mail(
+        from_email=sender_email,
+        to_emails=recipient_email,
+        subject="Votre code d'authentification",
+        plain_text_content=text_content,
+        html_content=html_content
+    )
+    
     try:
-        # Utilisation du relais SMTP Localhost sans authentification
-        with smtplib.SMTP("localhost", 25) as server:
-            server.sendmail(sender_email, recipient_email, message.as_string())
-        return True
+        if sendgrid_api_key:
+            sg = SendGridAPIClient(sendgrid_api_key)
+            response = sg.send(message)
+            logger.info(f"Email envoyé à {recipient_email}, statut: {response.status_code}")
+            return True
+        else:
+            # Pas de clé API SendGrid, log pour le développement
+            logger.warning(f"[DEV] SendGrid API Key manquante. Code d'authentification pour {recipient_email}: {auth_code}")
+            return False
     except Exception as e:
-        print(f"Erreur d'envoi d'email: {e}")
+        logger.error(f"Erreur d'envoi d'email: {e}")
         # Fallback : simuler l'envoi pour le développement
-        print(f"[DEV] Code d'authentification pour {recipient_email}: {auth_code}")
+        logger.info(f"[DEV] Code d'authentification pour {recipient_email}: {auth_code}")
         return False
 
 @router.post("/request", status_code=status.HTTP_202_ACCEPTED)
@@ -94,12 +101,25 @@ def request_auth_code(request: AuthRequest, background_tasks: BackgroundTasks, d
         db.commit()
         # Envoyer l'email en arrière-plan
         background_tasks.add_task(send_auth_email, request.email, auth_code)
+        
+        # En mode développement, renvoyer le code dans la réponse
+        if settings.ENVIRONMENT == "development" or not os.getenv("SENDGRID_API_KEY"):
+            return {"message": "Code d'authentification envoyé par email", "debug_code": auth_code}
+        
         return {"message": "Code d'authentification envoyé par email"}
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
+        logger.error(f"Erreur de base de données: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erreur lors de l'enregistrement du code d'authentification"
+        )
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Erreur inattendue: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Une erreur est survenue: {str(e)}"
         )
 
 @router.post("/verify", response_model=UserResponse)
